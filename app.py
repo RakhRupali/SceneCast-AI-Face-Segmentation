@@ -1,104 +1,134 @@
 import streamlit as st
 import numpy as np
-import cv2
-import time
-import json
-from datetime import datetime
-from PIL import Image
 import tensorflow as tf
-from tensorflow.keras import backend as K
+from tensorflow.keras.models import load_model
+from tensorflow.keras.layers import InputLayer
+import json
+from PIL import Image
+import time
 
-def dice_coefficient(y_true, y_pred, smooth=1):
-    y_true_f = K.flatten(K.cast(y_true, 'float32'))
-    y_pred_f = K.flatten(y_pred)
-    intersection = K.sum(y_true_f * y_pred_f)
-    return (2. * intersection + smooth) / (K.sum(y_true_f) + K.sum(y_pred_f) + smooth)
+# --- KERAS VERSION COMPATIBILITY LAYER ---
+class CompatInputLayer(InputLayer):
+    def __init__(self, **kwargs):
+        kwargs.pop('batch_shape', None)
+        super().__init__(**kwargs)
 
-def dice_loss(y_true, y_pred):
-    return 1 - dice_coefficient(y_true, y_pred)
+# --- STANDARD SYSTEM CONFIGURATION ---
+st.set_page_config(
+    page_title="RecycleVision Classifier",
+    page_icon="♻️",
+    layout="wide"
+)
 
-def iou_score(y_true, y_pred, smooth=1):
-    y_true_f = K.flatten(K.cast(y_true, 'float32'))
-    y_pred_f = K.flatten(K.round(y_pred))
-    intersection = K.sum(y_true_f * y_pred_f)
-    union = K.sum(y_true_f) + K.sum(y_pred_f) - intersection
-    return (intersection + smooth) / (union + smooth)
+# ---  BACKGROUND  ---
 
-@st.cache_resource
-def load_model():
-    return tf.keras.models.load_model(
-        "model.h5",
-        custom_objects={
-            'dice_coefficient': dice_coefficient,
-            'dice_loss': dice_loss,
-            'iou_score': iou_score
-        }
-    )
-
-st.set_page_config(page_title="Face Segmentation App", layout="wide")
-st.title("Face Segmentation App")
-st.write("Upload a movie screenshot to detect and segment faces.")
-
-with st.sidebar:
-    st.header("Settings")
-    threshold = st.slider("Mask threshold", 0.1, 0.9, 0.5, 0.05)
-    alpha = st.slider("Overlay opacity", 0.1, 0.9, 0.4, 0.05)
-
-model = load_model()
-
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
-
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    original_np = np.array(image.convert("RGB"))
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.subheader("Original")
-        st.image(image, use_container_width=True)
-
-    # Preprocess
-    img = np.array(image.convert("RGB"), dtype=np.float32)
-    img = cv2.resize(img, (224, 224)) / 255.0
-    inp = np.expand_dims(img, axis=0)
-
-    # Inference
-    start = time.time()
-    pred = model.predict(inp, verbose=0)
-    ms = (time.time() - start) * 1000
-
-    # Mask
-    mask = (pred[0, :, :, 0] > threshold).astype(np.uint8) * 255
-    mask_resized = cv2.resize(mask, (original_np.shape[1], original_np.shape[0]))
-
-    with col2:
-        st.subheader("Mask")
-        st.image(mask_resized, use_container_width=True, clamp=True)
-
-    with col3:
-        st.subheader("Overlay")
-        overlay = original_np.copy()
-        overlay[:, :, 0] = np.where(mask_resized > 0, 200, overlay[:, :, 0])
-        st.image(overlay, use_container_width=True)
-
-    # Metrics
-    st.markdown("---")
-    st.subheader("Performance Dashboard")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Inference Time", f"{ms:.1f} ms",
-              delta="Fast" if ms < 100 else "Slow")
-    m2.metric("Face Coverage",
-              f"{(mask_resized > 0).sum() / mask_resized.size * 100:.1f}%")
-    m3.metric("Image Size",
-              f"{original_np.shape[1]}x{original_np.shape[0]}")
-
-    # Download log
-    log = {
-        "timestamp": datetime.now().isoformat(),
-        "filename": uploaded_file.name,
-        "inference_ms": round(ms, 2),
-        "threshold": threshold
+st.markdown("""
+    <style>
+    .stApp {
+        background-image: linear-gradient(rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.92)), 
+                          url('https://images.unsplash.com/photo-1611284446314-60a58ac0deb9?q=80&w=2070&auto=format&fit=crop');
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-attachment: fixed;
     }
-    st.download_button("Download Log", 
-                       json.dumps(log, indent=2),
-                       "log.json", "application/json")
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- INTERFACE HEADER ---
+st.title("♻️ RecycleVision Module")
+st.text("Automated Waste Material Inspection & Deep Learning Pipeline")
+st.markdown("---")
+
+
+# --- MODEL LOADING UTILITY WITH CACHING ---
+@st.cache_resource
+def load_nn_pipeline():
+    trained_model = load_model(
+        "models/best_model.h5", 
+        compile=False, 
+        custom_objects={'InputLayer': CompatInputLayer}
+    )
+    with open("class_labels.json", "r") as f:
+        labels_map = json.load(f)
+    return trained_model, labels_map
+
+try:
+    model, class_labels = load_nn_pipeline()
+except Exception as err:
+    st.error(f"IO Error: System failed to initialize model components. Info: {err}")
+
+# Static dictionary for standard disposal suggestions
+recycling_tips = {
+    "cardboard": "Flatten the boxes. Keep away from moisture and oil stains before disposal.",
+    "glass": "Wash the glass container. Always remove metallic or plastic caps.",
+    "metal": "Rinse empty cans properly. Crush them flat to reduce space in bin.",
+    "paper": "Keep papers dry and untangled. Avoid mixing heavily soiled or glossy sheets.",
+    "plastic": "Check the resin code number. Rinse all fluid residues completely.",
+    "trash": "Non-recyclable material. Put into standard landfill dumpsters safely."
+}
+
+# --- SCREEN WORKSPACE SPLIT ---
+col1, col2 = st.columns([1, 1], gap="medium")
+
+with col1:
+    st.subheader("📁 Image Acquisition")
+    uploaded_file = st.file_uploader(
+        "Upload local waste item sample image:", 
+        type=["jpg", "jpeg", "png"],
+        help="Accepts common standard RGB image arrays"
+    )
+    
+    if uploaded_file:
+        raw_image = Image.open(uploaded_file)
+        # Fixed parameter for older Streamlit environments
+        st.image(raw_image, caption="Current Input Buffer Stream", use_column_width=True)
+
+with col2:
+    st.subheader("📉 Inference & Analytics Metrics")
+    
+    if uploaded_file:
+        with st.status("Processing input matrix...", expanded=True) as state_monitor:
+            time.sleep(0.4)
+            
+            resized_img = raw_image.resize((224, 224))
+            img_tensor = np.array(resized_img) / 255.0
+            batched_tensor = np.expand_dims(img_tensor, axis=0)
+            
+            state_monitor.update(label="Computing soft probabilities over network...", state="running")
+            network_output = model.predict(batched_tensor)[0]
+            
+            time.sleep(0.2)
+            state_monitor.update(label="Inference run completed.", state="complete", expanded=False)
+
+        ranked_indices = network_output.argsort()[::-1]
+        top_index = ranked_indices[0]
+        final_label = class_labels[str(top_index)]
+        confidence_percent = network_output[top_index] * 100
+
+        st.metric(
+            label="Identified Material Class", 
+            value=final_label.upper(), 
+            delta=f"{confidence_percent:.2f}% System Match Score"
+        )
+        
+        st.markdown("---")
+        st.write("**Top Class Probability Breakdown Matrix:**")
+        
+        for rank in range(3):
+            curr_idx = ranked_indices[rank]
+            item_name = class_labels[str(curr_idx)]
+            probability_val = network_output[curr_idx]
+            
+            st.text(f"{item_name.capitalize()} (Probability: {probability_val:.4f})")
+            st.progress(float(probability_val))
+
+        st.markdown("---")
+        matched_tip = recycling_tips.get(final_label, "Sort the item into the assigned waste management container safely.")
+        st.info(f"**Disposal Guideline Notice:** {matched_tip}")
+        
+    else:
+        st.info("System idle. Awaiting file input from container pipeline to trigger classification.")
+
+st.markdown("---")
+st.caption("RecycleVision Core Subsystem Engine | Local Deployment Environment Diagnostics")
