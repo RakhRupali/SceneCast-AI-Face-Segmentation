@@ -1,7 +1,9 @@
-tensorflow==2.10.0
-streamlit==1.28.0
-opencv-python-headless==4.8.0.76
-numpy==1.24.3
-Pillow==10.0.0
-matplotlib==3.7.2
-scikit-learn==1.3.0
+tensorflow==2.21.0
+keras
+streamlit
+numpy
+pandas
+matplotlib
+seaborn
+scikit-learn
+pillow
